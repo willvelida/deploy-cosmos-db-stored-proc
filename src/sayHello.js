@@ -1,5 +1,1 @@
-function sayHello(name) {
-    var context = getContext();
-    var response = context.getResponse();
-    response.setBody("Hello " + name);
-}
+"function sayHello(name) {\n\tvar context = getContext();\n\tvar response = context.getResponse();\n\tresponse.setBody(\"Hello \" + name);\n}"

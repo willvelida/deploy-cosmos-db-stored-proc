@@ -1,1 +1,111 @@
+name: Deploy sample
 
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Sign into Azure
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Lint Bicep
+        uses: Azure/cli@v1
+        with:
+          inlineScript: |
+            az bicep build --file ./deploy/main.bicep
+  validate:
+    needs: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Sign into Azure
+        uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Run preflight validation
+        uses: azure/arm-deploy@v1
+        with:
+          deploymentName: ${{ github.run_number }}
+          resourceGroupName: ${{ secrets.AZURE_RG }}
+          template: ./deploy/main.bicep
+          deploymentMode: Validate
+
+  preview:
+    needs: [lint, validate]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      
+      - uses: Azure/cli@v1
+        name: Run what-if
+        with:
+          inlineScript: |
+            az deployment group what-if --resource-group ${{ secrets.AZURE_RG }} --template-file ./deploy/main.bicep
+  
+  deploy-infra:
+    runs-on: ubuntu-latest
+    environment: Production
+    needs: preview
+    outputs:
+      accountName: ${{ steps.deploy-infra.outputs.accountName }}
+      databaseName: ${{ steps.deploy-infra.outputs.databaseName }}
+      containerName: ${{ steps.deploy-infra.outputs.containerName }}
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy Bicep Template
+        uses: azure/arm-deploy@v1
+        id: deploy
+        with:
+          deploymentName: ${{ github.run_number }}
+          resourceGroupName: ${{ secrets.AZURE_RG }}
+          template: ./deploy/main.bicep
+          deploymentMode: Incremental
+
+  deploy-stored-proc:
+    runs-on: ubuntu-latest
+    needs: deploy-infra
+    steps:
+      - uses: actions/checkout@v2
+
+      - uses: azure/login@v1
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+    
+      - name: Deploy Stored Proc to Cosmos DB
+        uses: azure/powershell@v1
+        with:
+          inlineScript: |
+            $body = Get-Content ./src/sayHello.js
+            $spBody = ConvertFrom-Json $body
+            New-AzCosmosDBSqlStoredProcedure -ResourceGroupName ${{ secrets.AZURE_RG }} -AccountName ${{ needs.deploy.outputs.accountName }} -DatabaseName ${{ needs.deploy.outputs.databaseName }} -ContainerName ${{ needs.deploy.outputs.containerName }} -Name sayHello -Body $spBody

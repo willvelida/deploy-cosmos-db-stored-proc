@@ -84,7 +84,7 @@ stages:
               env:
                 DEPLOYMENT_OUTPUTS: $(deploymentOutputs)
 
-- stage: Deploy Stored Proc
+- stage: Deploy_Stored_Proc
   jobs:
     - job: DeployStoredProc
       displayName: Deploy Stored Proc
